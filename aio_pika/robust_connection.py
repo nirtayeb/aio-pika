@@ -26,6 +26,7 @@ class RobustConnection(Connection):
     """ Robust connection """
 
     DEFAULT_RECONNECT_INTERVAL = 1
+    DEFAULT_MAX_RECONNECT_ATTEMPTS = 0  # Infinite
     CHANNEL_CLASS = RobustChannel
 
     def __init__(self, host: str = 'localhost', port: int = 5672, login: str = 'guest',
@@ -34,6 +35,10 @@ class RobustConnection(Connection):
 
         self.reconnect_interval = kwargs.pop('reconnect_interval',
                                              self.DEFAULT_RECONNECT_INTERVAL)
+
+        self.max_reconnect_attempts = kwargs.pop('reconnect_interval',
+                                             self.DEFAULT_MAX_RECONNECT_ATTEMPTS)
+        self._reconnect_attempts = 0
 
         super().__init__(host=host, port=port, login=login, password=password,
                          virtual_host=virtual_host, ssl=ssl, loop=loop, **kwargs)
@@ -85,10 +90,19 @@ class RobustConnection(Connection):
         if not future.done():
             future.set_result(None)
 
+        if self._reconnect_attempts >= self.max_reconnect_attempts > 0:
+            if not future.done():
+                future.set_exception(reason)
+
+            self.loop.create_task(self.close())
+            return
+
         self.loop.call_later(
             self.reconnect_interval,
             lambda: self.loop.create_task(self.connect())
         )
+
+        self._reconnect_attempts += 1
 
     @asyncio.coroutine
     def connect(self):
@@ -100,6 +114,8 @@ class RobustConnection(Connection):
         if self._connection:
             for callback in self._on_reconnect_callbacks:
                 callback(self)
+
+            self._reconnect_attempts = 0  # clear reconnection attempts on success
 
         return result
 
